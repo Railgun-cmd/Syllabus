@@ -1,0 +1,27 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# ==== 狮课表 追加 ====
+.kotlin/
+/app/build
+/build
+*.log
+build_v*.log
+/1/
+/2/
+鲸课表-迁移包-demo版.zip
+
+/.idea/
