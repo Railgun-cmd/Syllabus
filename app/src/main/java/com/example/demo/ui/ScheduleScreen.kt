@@ -36,9 +36,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -49,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,6 +59,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.demo.data.ClassTime
 import com.example.demo.data.Course
 import com.example.demo.data.ScheduleMeta
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import kotlin.math.abs
@@ -158,7 +164,14 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
 
     val today = remember { todayEpochDay() }
     val todayDow = remember { dayOfWeekOf(today) }
-    val nowMinutes = remember { nowMinutesOfDay() }
+    // 当前时间（分钟）：每 30 秒刷新一次，让「已上」状态自动更新
+    var nowMinutes by remember { mutableIntStateOf(nowMinutesOfDay()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMinutes = nowMinutesOfDay()
+        }
+    }
     val scope = rememberCoroutineScope()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -179,10 +192,28 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
         maxOf(MIN_WEEKS, courses.maxOfOrNull { it.weekEnd } ?: 0)
     }
 
-    val pagerState = rememberPagerState(initialPage = 0, pageCount = { maxWeek })
+    // 当前周（未设置开学日期时为 null）
+    val currentWeek = remember(meta?.termStartEpochDay) { currentWeekOf(meta?.termStartEpochDay) }
+    // 首屏直接落在当周，避免先显示第 1 周再跳过去
+    val initialPage = ((currentWeek ?: 1) - 1).coerceIn(0, maxWeek - 1)
+
+    val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { maxWeek })
     val selectedWeek = pagerState.currentPage + 1
 
-    var weekAutoApplied by remember { mutableStateOf(false) }
+    // 回到前台时自动回到当周（进入应用保持在当周课程）
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, currentWeek, maxWeek) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && currentWeek != null) {
+                scope.launch {
+                    pagerState.scrollToPage((currentWeek - 1).coerceIn(0, maxWeek - 1))
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     var detailCourse by remember { mutableStateOf<Course?>(null) }
     var editingCourse by remember { mutableStateOf<Course?>(null) }
     var showEditor by remember { mutableStateOf(false) }
@@ -190,14 +221,6 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
-
-    LaunchedEffect(meta?.termStartEpochDay) {
-        val ts = meta?.termStartEpochDay
-        if (!weekAutoApplied && ts != null) {
-            pagerState.scrollToPage((currentWeekOf(ts) ?: 1) - 1)
-            weekAutoApplied = true
-        }
-    }
 
     val todayInSelectedWeek = today in
         weekStartOf(meta?.termStartEpochDay, selectedWeek)..
@@ -215,6 +238,11 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
                         showEditor = true
                     },
                 )
+            } else if (meta == null) {
+                // 等元信息加载完再建 Pager，避免首屏闪一下第 1 周
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
             } else {
                 Column(Modifier.fillMaxSize()) {
                     ScheduleHeader(
@@ -263,6 +291,7 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
                                 todayDow = todayDow,
                                 todayInSelectedWeek = pageTodayInWeek,
                                 nowMinutes = nowMinutes,
+                                currentWeek = currentWeek,
                                 onCourseClick = { detailCourse = it },
                             )
                         }
@@ -476,6 +505,7 @@ private fun WeekGrid(
     todayDow: Int,
     todayInSelectedWeek: Boolean,
     nowMinutes: Int,
+    currentWeek: Int?,
     onCourseClick: (Course) -> Unit,
 ) {
     val totalHeight = gridHeight()
@@ -543,17 +573,26 @@ private fun WeekGrid(
                         val s = c.periodStart.coerceIn(1, ClassTime.PERIOD_COUNT)
                         val e = c.periodEnd.coerceIn(s, ClassTime.PERIOD_COUNT)
                         val inWeek = c.activeInWeek(selectedWeek)
-                        val finished = inWeek && todayInSelectedWeek &&
-                            c.day == todayDow && nowMinutes > ClassTime.endMinutes(c.periodEnd)
+                        // 今天这一节是否已经下课
+                        val todayEnded = todayInSelectedWeek && c.day == todayDow &&
+                            nowMinutes > ClassTime.endMinutes(c.periodEnd)
+                        // 「过往」判定：过去的周次 / 本周更早的星期 / 今天已下课
+                        val past = when {
+                            !inWeek -> false
+                            currentWeek != null && selectedWeek < currentWeek -> true
+                            !todayInSelectedWeek -> false
+                            c.day < todayDow -> true
+                            else -> todayEnded
+                        }
                         val tag = when {
                             !inWeek -> "非本周"
-                            finished -> "已上"
+                            todayEnded -> "已上"
                             else -> null
                         }
                         CourseBlock(
                             course = c,
                             tag = tag,
-                            dim = !inWeek || finished,
+                            dim = !inWeek || past,
                             modifier = Modifier
                                 .offset(y = offsetOfPeriod(s))
                                 .fillMaxWidth()
