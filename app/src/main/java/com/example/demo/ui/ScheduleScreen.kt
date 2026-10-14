@@ -96,27 +96,45 @@ private val DAY_FULL = listOf("周一", "周二", "周三", "周四", "周五", 
 
 // ---------------- 日期工具 ----------------
 
+/** 当前时区相对 UTC 的偏移（毫秒） */
+private fun zoneOffsetMillis(): Int {
+    val cal = Calendar.getInstance()
+    return cal.get(Calendar.ZONE_OFFSET) + cal.get(Calendar.DST_OFFSET)
+}
+
+/** 把 epochDay 还原成「本地 0 点」的 Calendar */
+private fun calendarOfEpochDay(epochDay: Long): Calendar {
+    val cal = Calendar.getInstance()
+    cal.timeInMillis = epochDay * 86_400_000L - zoneOffsetMillis()
+    return cal
+}
+
+/**
+ * 今天的 epochDay（本地日期）。
+ *
+ * 注意：不能直接用 `timeInMillis / 86400000` —— 那是 UTC 日期。
+ * 在 UTC+8，本地 0 点对应 UTC 前一天 16:00，取整就会少一天。
+ */
 fun todayEpochDay(): Long {
     val cal = Calendar.getInstance()
+    val off = zoneOffsetMillis()
     cal.set(Calendar.HOUR_OF_DAY, 0)
     cal.set(Calendar.MINUTE, 0)
     cal.set(Calendar.SECOND, 0)
     cal.set(Calendar.MILLISECOND, 0)
-    return cal.timeInMillis / 86_400_000L
+    return (cal.timeInMillis + off) / 86_400_000L
 }
 
 /** 某天所在周的周一（epochDay） */
 fun mondayEpochDayOf(epochDay: Long): Long {
-    val cal = Calendar.getInstance().apply { timeInMillis = epochDay * 86_400_000L }
-    val dow = cal.get(Calendar.DAY_OF_WEEK) // 1=周日 ... 7=周六
+    val dow = calendarOfEpochDay(epochDay).get(Calendar.DAY_OF_WEEK) // 1=周日 ... 7=周六
     val offset = if (dow == Calendar.SUNDAY) -6 else Calendar.MONDAY - dow
     return epochDay + offset
 }
 
 /** 1=周一 ... 7=周日 */
 fun dayOfWeekOf(epochDay: Long): Int {
-    val cal = Calendar.getInstance().apply { timeInMillis = epochDay * 86_400_000L }
-    val d = cal.get(Calendar.DAY_OF_WEEK)
+    val d = calendarOfEpochDay(epochDay).get(Calendar.DAY_OF_WEEK)
     return if (d == Calendar.SUNDAY) 7 else d - 1
 }
 
@@ -133,21 +151,15 @@ fun currentWeekOf(termStartEpochDay: Long?): Int? {
 }
 
 fun formatEpochDay(day: Long): String {
-    val cal = Calendar.getInstance().apply { timeInMillis = day * 86_400_000L }
+    val cal = calendarOfEpochDay(day)
     return "%d/%d/%d".format(
         cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH)
     )
 }
 
-fun dayOfMonthOf(day: Long): Int {
-    val cal = Calendar.getInstance().apply { timeInMillis = day * 86_400_000L }
-    return cal.get(Calendar.DAY_OF_MONTH)
-}
+fun dayOfMonthOf(day: Long): Int = calendarOfEpochDay(day).get(Calendar.DAY_OF_MONTH)
 
-private fun monthOf(day: Long): Int {
-    val cal = Calendar.getInstance().apply { timeInMillis = day * 86_400_000L }
-    return cal.get(Calendar.MONTH) + 1
-}
+private fun monthOf(day: Long): Int = calendarOfEpochDay(day).get(Calendar.MONTH) + 1
 
 private fun nowMinutesOfDay(): Int {
     val cal = Calendar.getInstance()
@@ -221,6 +233,14 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
     var showSettings by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showTermPrompt by remember { mutableStateOf(false) }
+
+    // 导入成功后若还没设置开学日期，提示去设置（否则算不出「当前第几周」）
+    LaunchedEffect(importState) {
+        if (importState is ImportState.Done && meta?.termStartEpochDay == null) {
+            showTermPrompt = true
+        }
+    }
 
     val todayInSelectedWeek = today in
         weekStartOf(meta?.termStartEpochDay, selectedWeek)..
@@ -373,6 +393,30 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
             },
             dismissButton = {
                 TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
+            },
+        )
+    }
+
+    if (showTermPrompt) {
+        AlertDialog(
+            onDismissRequest = { showTermPrompt = false },
+            title = { Text("设置开学日期") },
+            text = {
+                Text(
+                    "课表导入成功！\n\n" +
+                        "请设置开学日期（第 1 周的周一），它用来：\n" +
+                        "· 计算「现在是第几周」和单双周\n" +
+                        "· 判断哪些课已经上过（灰显）"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showTermPrompt = false
+                    showDatePicker = true
+                }) { Text("去设置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTermPrompt = false }) { Text("以后再说") }
             },
         )
     }
@@ -556,7 +600,11 @@ private fun WeekGrid(
             for (day in 1..7) {
                 val dayCourses = courses
                     .filter { it.day == day && !it.isOther && it.periodStart >= 1 }
-                    .sortedBy { it.periodStart }
+                    // 同一时间格可能有多门课（例如同一门课的不同周次段）：
+                    // 把「本周不上」的画在底层、「本周要上」的画在上层，避免灰块遮住彩色块
+                    .sortedWith(
+                        compareBy({ if (it.activeInWeek(selectedWeek)) 1 else 0 }, { it.periodStart })
+                    )
 
                 Box(Modifier.weight(1f).height(totalHeight)) {
                     // 每节底部的分隔线
