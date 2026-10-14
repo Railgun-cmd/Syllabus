@@ -96,23 +96,29 @@ object ZhengfangImporter {
                 return@withContext fail("取不到登录公钥（HTTP $c2）。该系统可能不是新版正方，或地址不完整")
             }
 
-            // ---- 3. 登录 ----
+            // ---- 3. 登录（把登录页的所有隐藏字段一起提交，各校要求不同）----
             val encrypted = rsaEncrypt(cfg.password, modulus, exponent)
-            val (c3, res3) = postForm(
-                "$root/xtgl/login_slogin.html",
-                mapOf(
-                    "csrftoken" to csrf,
-                    "yhm" to cfg.username,
-                    "mm" to encrypted,
-                    "language" to "zh_CN",
-                ),
-            )
-            note("登录提交 -> HTTP $c3")
-            val pwdWrong = res3.contains("用户名或密码不正确") || res3.contains("密码错误")
-            val needCaptcha = res3.contains("验证码") && (res3.contains("yzm") || res3.contains("captcha"))
-            if (pwdWrong) return@withContext fail("用户名或密码不正确")
-            if (needCaptcha && res3.contains("login_slogin")) {
-                return@withContext fail("该系统登录需要验证码，暂不支持（请把这句话截图给助手）")
+            val hidden = parseHiddenInputs(page)
+            note("登录页隐藏字段: ${hidden.keys.joinToString(", ")}")
+            val form = LinkedHashMap<String, String>()
+            form.putAll(hidden)
+            form["csrftoken"] = csrf.ifEmpty { hidden["csrftoken"] ?: "" }
+            form["yhm"] = cfg.username
+            form["mm"] = encrypted
+            if (form["language"].isNullOrEmpty()) form["language"] = "zh_CN"
+
+            val (c3, res3) = postForm("$root/xtgl/login_slogin.html", form)
+            note("登录提交 -> HTTP $c3, ${res3.length} 字符")
+
+            // 登录失败时服务器会重新渲染登录页（含 yhm 输入框）
+            val backToLogin = res3.contains("id=\"yhm\"") || res3.contains("name=\"yhm\"")
+            if (backToLogin) {
+                val hint = when {
+                    res3.contains("用户名或密码不正确") || res3.contains("密码错误") -> "用户名或密码不正确"
+                    res3.contains("id=\"yzm\"") -> "登录需要验证码（多次输错后触发，请先用浏览器登录一次或稍后再试）"
+                    else -> "登录没有成功（服务器仍返回登录页）"
+                }
+                return@withContext fail(hint)
             }
 
             // ---- 4. 抓课表 ----
@@ -150,6 +156,24 @@ object ZhengfangImporter {
     // ---------------- 内部实现 ----------------
 
     private fun fail(msg: String): ZfResult.Fail = ZfResult.Fail(msg, log.toString())
+
+    /** 解析登录页里的所有 hidden 输入，登录时原样带上（各校字段不同） */
+    private fun parseHiddenInputs(html: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        Regex("""<input[^>]*type\s*=\s*["']hidden["'][^>]*>""", RegexOption.IGNORE_CASE)
+            .findAll(html)
+            .forEach { m ->
+                val tag = m.value
+                val name = Regex("""name\s*=\s*["']([^"']*)""").find(tag)?.groupValues?.get(1)
+                if (name.isNullOrEmpty()) return@forEach
+                val value = Regex("""value\s*=\s*"([^"]*)"""").find(tag)?.groupValues?.get(1)
+                    ?: Regex("""value\s*=\s*'([^']*)'""").find(tag)?.groupValues?.get(1)
+                    ?: Regex("""value\s*=\s*([^\s>]+)""").find(tag)?.groupValues?.get(1)
+                    ?: ""
+                out[name] = value
+            }
+        return out
+    }
 
     private fun note(s: String) {
         log.append(s).append('\n')

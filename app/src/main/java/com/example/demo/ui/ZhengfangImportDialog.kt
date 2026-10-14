@@ -52,7 +52,7 @@ fun ZhengfangImportDialog(
     onDismiss: () -> Unit,
     onImport: (ZfConfig) -> Unit,
 ) {
-    var url by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("http://jwxt.sdnu.edu.cn/jwglxt") }
     var user by remember { mutableStateOf("") }
     var pwd by remember { mutableStateOf("") }
     var year by remember { mutableStateOf(ZhengfangImporter.defaultSchoolYear()) }
