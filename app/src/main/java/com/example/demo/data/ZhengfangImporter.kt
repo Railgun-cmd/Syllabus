@@ -126,15 +126,16 @@ object ZhengfangImporter {
             val (c3, res3) = postForm("$root/xtgl/login_slogin.html", form)
             note("登录提交 -> HTTP $c3, ${res3.length} 字符")
 
-            // 登录失败时服务器会重新渲染登录页（含 yhm 输入框）
+            // 服务器若仍返回登录页，多半是没登进去；但也可能只是主页里带了隐藏登录框，
+            // 所以这里只记日志告警，真正的成败判定交给后面的课表接口
             val backToLogin = res3.contains("id=\"yhm\"") || res3.contains("name=\"yhm\"")
             if (backToLogin) {
                 val hint = when {
                     res3.contains("用户名或密码不正确") || res3.contains("密码错误") -> "用户名或密码不正确"
-                    res3.contains("id=\"yzm\"") -> "登录需要验证码（多次输错后触发，请先用浏览器登录一次或稍后再试）"
-                    else -> "登录没有成功（服务器仍返回登录页）"
+                    res3.contains("id=\"yzm\"") -> "登录需要验证码（多次输错后触发）"
+                    else -> "疑似未登录成功"
                 }
-                return@withContext fail(hint)
+                note("告警: $hint（继续尝试课表接口以确认）")
             }
 
             // ---- 4. 抓课表 ----
@@ -146,7 +147,10 @@ object ZhengfangImporter {
             note("课表接口 -> HTTP $c4, ${kb.length} 字符")
             val body = kb.trim()
             if (!body.startsWith("{")) {
-                return@withContext fail("课表接口没返回 JSON（多半是没登录成功）。请确认学校地址、学年学期是否正确")
+                val extra = if (backToLogin) "（登录时服务器仍返回登录页，可能学号密码有误或需要验证码）" else ""
+                return@withContext fail(
+                    "课表接口没返回 JSON，多半是没登录成功$extra。请确认学号密码、学年学期是否正确"
+                )
             }
             val obj = JSONObject(body)
             val arr = obj.optJSONArray("kbList")
