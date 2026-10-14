@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.demo"
         minSdk = 24
         targetSdk = 37
-        versionCode = 10
-        versionName = "0.27"
+        versionCode = 11
+        versionName = "0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

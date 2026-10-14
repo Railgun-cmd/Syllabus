@@ -70,18 +70,34 @@ object ZhengfangImporter {
         cookies.clear()
         try {
             trustAllCerts()
-            val base = cfg.baseUrl.trim().trimEnd('/')
-            if (base.isEmpty()) return@withContext fail("请先填写教务系统地址")
-            val root = normalizeBase(base)
-            note("教务系统: $root")
+            val raw = cfg.baseUrl.trim()
+            if (raw.isEmpty()) return@withContext fail("请先填写教务系统地址")
             note("学年/学期: ${cfg.schoolYear} / ${cfg.term}")
 
-            // ---- 1. 登录页 ----
-            val (c1, page) = get("$root/xtgl/login_slogin.html")
-            note("取登录页 -> HTTP $c1, ${page.length} 字符")
-            if (c1 != 200 && c1 != 302) {
-                return@withContext fail("打不开登录页（HTTP $c1）。请确认地址正确、且手机能访问教务系统（很多学校只能校园网/VPN 访问）")
+            // ---- 1. 登录页（兼容：站点根 / 带 jwglxt / 直接粘登录页地址 / 带参数的首页地址）----
+            var root = ""
+            var page = ""
+            var lastCode = 0
+            for (cand in candidateRoots(raw)) {
+                val (code, html) = get("$cand/xtgl/login_slogin.html")
+                lastCode = code
+                note("尝试 $cand -> HTTP $code (${html.length} 字符)")
+                if (code == 200 && html.contains("login_slogin")) {
+                    root = cand
+                    page = html
+                    break
+                }
             }
+            if (root.isEmpty()) {
+                return@withContext fail(
+                    "打不开登录页（最后一次 HTTP $lastCode）。请确认地址正确，" +
+                        "且手机能访问教务系统（部分学校只能在校园网/VPN 下访问）"
+                )
+            }
+            note("使用地址: $root")
+            val title = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE)
+                .find(page)?.groupValues?.get(1)
+            note("页面标题: ${title ?: "?"}")
             val csrf = Regex("""name="csrftoken"\s+value="([^"]*)"""").find(page)?.groupValues?.get(1)
                 ?: Regex("""csrftoken["']?\s*[:=]\s*["']([^"']+)""").find(page)?.groupValues?.get(1)
                 ?: ""
@@ -179,11 +195,29 @@ object ZhengfangImporter {
         log.append(s).append('\n')
     }
 
-    /** 用户可能填成 http://xxx/jwglxt/ ，这里统一成站点根 */
-    private fun normalizeBase(url: String): String {
-        var u = url
+    /**
+     * 用户可能填：
+     *   http://jwxt.sdnu.edu.cn
+     *   http://jwxt.sdnu.edu.cn/jwglxt
+     *   http://jwxt.sdnu.edu.cn/jwglxt/xtgl/login_slogin.html
+     *   http://jwxt.sdnu.edu.cn/jwglxt/xtgl/index_initMenu.html?jsdm=xs&_t=...
+     * 这里统一归一成可拼 /xtgl/... 的根地址（必要时再补一个带 /jwglxt 的候选）
+     */
+    private fun candidateRoots(raw: String): List<String> {
+        var u = raw.trim()
         if (!u.startsWith("http")) u = "http://$u"
-        return u.trimEnd('/')
+        u = u.substringBefore('#').substringBefore('?').trimEnd('/')
+        for (marker in listOf("/xtgl/", "/kbcx/", "/xtgl", "/kbcx", "login_slogin", "index_initMenu")) {
+            val i = u.indexOf(marker)
+            if (i > 0) {
+                u = u.substring(0, i)
+                break
+            }
+        }
+        u = u.trimEnd('/')
+        val list = mutableListOf(u)
+        if (!u.endsWith("/jwglxt")) list += "$u/jwglxt"
+        return list
     }
 
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
