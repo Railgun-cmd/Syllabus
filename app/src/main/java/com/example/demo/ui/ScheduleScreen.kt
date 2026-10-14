@@ -234,6 +234,13 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
     var showClearConfirm by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTermPrompt by remember { mutableStateOf(false) }
+    var showZfImport by remember { mutableStateOf(false) }
+    val zfLog by vm.zfLog.collectAsState()
+
+    // 导入成功后收起教务系统对话框
+    LaunchedEffect(importState) {
+        if (importState is ImportState.Done) showZfImport = false
+    }
 
     // 导入成功后若还没设置开学日期，提示去设置（否则算不出「当前第几周」）
     LaunchedEffect(importState) {
@@ -257,6 +264,7 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
                         editingCourse = null
                         showEditor = true
                     },
+                    onZfImport = { showZfImport = true },
                 )
             } else if (meta == null) {
                 // 等元信息加载完再建 Pager，避免首屏闪一下第 1 周
@@ -374,6 +382,10 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
                 showSettings = false
                 openPdf.launch(arrayOf("application/pdf"))
             },
+            onZfImport = {
+                showSettings = false
+                showZfImport = true
+            },
             onEditDate = { showSettings = false; showDatePicker = true },
             onClear = { showSettings = false; showClearConfirm = true },
             onDismiss = { showSettings = false },
@@ -394,6 +406,16 @@ fun ScheduleScreen(vm: ScheduleViewModel = viewModel()) {
             dismissButton = {
                 TextButton(onClick = { showClearConfirm = false }) { Text("取消") }
             },
+        )
+    }
+
+    if (showZfImport) {
+        ZhengfangImportDialog(
+            importing = importState is ImportState.Parsing,
+            errorMessage = (importState as? ImportState.Error)?.message,
+            diagnosticLog = zfLog,
+            onDismiss = { showZfImport = false },
+            onImport = { cfg -> vm.importFromZhengfang(cfg) },
         )
     }
 
@@ -716,7 +738,11 @@ private fun CourseBlock(
 // ---------------- 空状态 ----------------
 
 @Composable
-private fun EmptyState(onImportPdf: () -> Unit, onAddManual: () -> Unit) {
+private fun EmptyState(
+    onImportPdf: () -> Unit,
+    onAddManual: () -> Unit,
+    onZfImport: () -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -735,6 +761,8 @@ private fun EmptyState(onImportPdf: () -> Unit, onAddManual: () -> Unit) {
         Spacer(Modifier.height(18.dp))
         Button(onClick = onImportPdf) { Text("导入课表 PDF") }
         Spacer(Modifier.height(8.dp))
+        Button(onClick = onZfImport) { Text("从教务系统导入") }
+        Spacer(Modifier.height(4.dp))
         TextButton(onClick = onAddManual) { Text("手动添加课程") }
     }
 }
@@ -808,6 +836,7 @@ private fun CourseDetailDialog(
 private fun SettingsDialog(
     meta: ScheduleMeta?,
     onImportPdf: () -> Unit,
+    onZfImport: () -> Unit,
     onEditDate: () -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
@@ -835,6 +864,7 @@ private fun SettingsDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 TextButton(onClick = onImportPdf) { Text("重新导入课表 PDF") }
+                TextButton(onClick = onZfImport) { Text("从教务系统导入") }
                 TextButton(onClick = onClear) {
                     Text("清空全部课程", color = MaterialTheme.colorScheme.error)
                 }
