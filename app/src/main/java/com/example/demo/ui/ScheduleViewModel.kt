@@ -8,9 +8,6 @@ import com.example.demo.data.Course
 import com.example.demo.data.PdfScheduleParser
 import com.example.demo.data.ScheduleMeta
 import com.example.demo.data.ScheduleStore
-import com.example.demo.data.ZfConfig
-import com.example.demo.data.ZfResult
-import com.example.demo.data.ZhengfangImporter
 import com.example.demo.data.withUniqueIds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,9 +36,6 @@ class ScheduleViewModel(app: Application) : AndroidViewModel(app) {
     private val _importState = MutableStateFlow<ImportState>(ImportState.Idle)
     val importState: StateFlow<ImportState> = _importState
 
-    /** 教务系统导入的诊断日志（失败时给用户看） */
-    private val _zfLog = MutableStateFlow("")
-    val zfLog: StateFlow<String> = _zfLog
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -82,28 +76,6 @@ class ScheduleViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 从正方教务系统直接导入课表（学号+密码登录后抓取） */
-    fun importFromZhengfang(cfg: ZfConfig) {
-        viewModelScope.launch {
-            _importState.value = ImportState.Parsing
-            _zfLog.value = ""
-            when (val r = ZhengfangImporter.fetch(cfg)) {
-                is ZfResult.Ok -> {
-                    val fixed = r.courses.withUniqueIds()
-                    val m = _meta.value ?: ScheduleMeta()
-                    withContext(Dispatchers.IO) { store.save(m, fixed) }
-                    _meta.value = m
-                    _courses.value = fixed
-                    _zfLog.value = r.log
-                    _importState.value = ImportState.Done(fixed.size)
-                }
-                is ZfResult.Fail -> {
-                    _zfLog.value = r.log
-                    _importState.value = ImportState.Error(r.message)
-                }
-            }
-        }
-    }
 
     /** 设置开学日期（第 1 周周一的 epochDay） */
     fun setTermStart(epochDay: Long) {
